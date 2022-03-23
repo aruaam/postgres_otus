@@ -36,7 +36,7 @@
 2. Удалил данные базы через: sudo rm -r /var/lib/postgresql
 3. Детачнул диск от первого инстанса: gcloud compute instances detach-disk postgres1 --disk disk-1
 4. Аттачнул ко второму: gcloud compute instances attach-disk postgres2 --disk disk-1
-5. Прописал партицию это диска в fstab второго инстанса: LABEL=datapartition /mnt/data ext4 defaults 0 2
+5. Прописал партицию этого диска в fstab второго инстанса: LABEL=datapartition /mnt/data ext4 defaults 0 2
 6. Прописал data_directory = '/mnt/data/14/main' в /etc/postgresql/14/main
 7. Попробовал стартануть постгрес, но он /mnt/data/ найти не мог.
 8. Рестартанул убунту на втором инстансе, папка '/mnt/data/14/main' нашлась, постгрес успешно стартанул при запуске ОС. 
