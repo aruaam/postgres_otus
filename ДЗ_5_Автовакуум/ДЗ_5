@@ -1,0 +1,54 @@
+-- применить параметры настройки PostgreSQL из прикрепленного к материалам занятия файла
+-- выполнить pgbench -i postgres
+-- запустить pgbench -c8 -P 60 -T 3600 -U postgres postgres
+-- дать отработать до конца
+-- зафиксировать среднее значение tps в последней ⅙ части работы
+
+Стандартные параметры:
+
+log_autovacuum_min_duration = '-1'
+autovacuum_max_workers = '3'
+autovacuum_naptime = '1min'
+autovacuum_vacuum_threshold = '50'
+autovacuum_vacuum_scale_factor = '0.2'
+autovacuum_vacuum_cost_delay = '2ms'
+autovacuum_vacuum_cost_limit = '-1'
+
+Начальное tps ~ 600
+Среднее значение tps в последней 1/6 части работы (последние 10 строк репортов) = 395.52
+
+     relname      | n_live_tup | n_dead_tup | ratio% |        last_autovacuum
+------------------+------------+------------+--------+-------------------------------
+ pgbench_accounts |     100000 |       7606 |      7 | 2022-03-30 20:39:01.203544+00
+
+     relname     | n_live_tup | n_dead_tup | ratio% |        last_autovacuum
+-----------------+------------+------------+--------+-------------------------------
+ pgbench_history |    1503021 |          0 |      0 | 2022-03-30 21:31:10.303623+00
+
+Видно, что в таблице pgbench_accounts вообще не было автовакуума за время теста. Вероятно из-за высокого scale_factor.
+
+-- а дальше настроить autovacuum максимально эффективно
+-- так чтобы получить максимально ровное значение tps на горизонте часа
+
+Предложенное на лекции:
+
+ALTER SYSTEM SET log_autovacuum_min_duration = '0';
+ALTER SYSTEM SET autovacuum_max_workers = '4'; -- в тестовой базе 4 таблицы, вся работа в двух таблицах по сути, пусть по два воркера на таблицу будет.
+ALTER SYSTEM SET autovacuum_naptime = '30s';
+ALTER SYSTEM SET autovacuum_vacuum_threshold = '25'; -- 8 параллельных подключений, в одном цикле pgbench 3 операции апдейта, а значит 3 мёртвые строки на подключение - тогда 25 очень быстро достигнет. Пускай 250 будет
+ALTER SYSTEM SET autovacuum_vacuum_scale_factor = '0.05'; -- чтобы охватить по процентному соотношению таблицу pgbench_accounts
+ALTER SYSTEM SET autovacuum_vacuum_cost_delay = '10'; -- пока так, но можно попробовать до нуля сбросить
+ALTER SYSTEM SET autovacuum_vacuum_cost_limit = '1000'; -- как на лекции, нет идей по изменению
+
+В этих двух таблицах почти никакой активности не было, поэтому там можно автовакуум вырубить вообще:
+
+ALTER TABLE pgbench_branches set (autovacuum_enabled = off);
+ALTER TABLE pgbench_tellers set (autovacuum_enabled = off);
+
+Итого:
+Начальное tps ~ 
+Среднее значение tps в последней 1/6 части работы (последние 10 строк) =  
+
+
+https://aws.amazon.com/blogs/database/understanding-autovacuum-in-amazon-rds-for-postgresql-environments/
+https://aws.amazon.com/blogs/database/a-case-study-of-tuning-autovacuum-in-amazon-rds-for-postgresql/
