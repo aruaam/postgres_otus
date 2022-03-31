@@ -14,7 +14,7 @@ autovacuum_vacuum_scale_factor = '0.2'
 autovacuum_vacuum_cost_delay = '2ms'
 autovacuum_vacuum_cost_limit = '-1'
 
-Начальное tps ~ 600
+Начальное tps ~ 620
 Среднее значение tps в последней 1/6 части работы (последние 10 строк репортов) = 395.52
 
      relname      | n_live_tup | n_dead_tup | ratio% |        last_autovacuum
@@ -37,8 +37,8 @@ ALTER SYSTEM SET autovacuum_max_workers = '4'; -- в тестовой базе 4
 ALTER SYSTEM SET autovacuum_naptime = '30s';
 ALTER SYSTEM SET autovacuum_vacuum_threshold = '25'; -- 8 параллельных подключений, в одном цикле pgbench 3 операции апдейта, а значит 3 мёртвые строки на подключение - тогда 25 очень быстро достигнет. Пускай 250 будет
 ALTER SYSTEM SET autovacuum_vacuum_scale_factor = '0.05'; -- чтобы охватить по процентному соотношению таблицу pgbench_accounts
-ALTER SYSTEM SET autovacuum_vacuum_cost_delay = '10'; -- пока так, но можно попробовать до нуля сбросить
-ALTER SYSTEM SET autovacuum_vacuum_cost_limit = '1000'; -- как на лекции, нет идей по изменению
+ALTER SYSTEM SET autovacuum_vacuum_cost_delay = '10'; -- как на лекции
+ALTER SYSTEM SET autovacuum_vacuum_cost_limit = '1000'; -- как на лекции
 
 В этих двух таблицах почти никакой активности не было, поэтому там можно автовакуум вырубить вообще:
 
