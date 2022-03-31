@@ -14,6 +14,7 @@ autovacuum_vacuum_scale_factor = '0.2'
 autovacuum_vacuum_cost_delay = '2ms'
 autovacuum_vacuum_cost_limit = '-1'
 
+Результат:
 Начальное tps ~ 620
 Среднее значение tps в последней 1/6 части работы (последние 10 строк репортов) = 395.52
 
@@ -21,34 +22,28 @@ autovacuum_vacuum_cost_limit = '-1'
 ------------------+------------+------------+--------+-------------------------------
  pgbench_accounts |     100000 |       7606 |      7 | 2022-03-30 20:39:01.203544+00
 
-     relname     | n_live_tup | n_dead_tup | ratio% |        last_autovacuum
------------------+------------+------------+--------+-------------------------------
- pgbench_history |    1503021 |          0 |      0 | 2022-03-30 21:31:10.303623+00
-
-Видно, что в таблице pgbench_accounts вообще не было автовакуума за время теста. Вероятно из-за высокого scale_factor.
+Обратил внимание, что в таблице pgbench_accounts вообще не было автовакуума за время теста. Вероятно из-за высокого scale_factor.
 
 -- а дальше настроить autovacuum максимально эффективно
 -- так чтобы получить максимально ровное значение tps на горизонте часа
 
-Применённые параметры:
+Потестил с разными параметрами, проверяя количество мёртвых строк в процессе на разных таблицах. Остановился на таких:
 
 ALTER SYSTEM SET log_autovacuum_min_duration = '0';
-ALTER SYSTEM SET autovacuum_max_workers = '4'; -- в тестовой базе 4 таблицы, вся работа в двух таблицах по сути, пусть по два воркера на таблицу будет.
-ALTER SYSTEM SET autovacuum_naptime = '30s';
-ALTER SYSTEM SET autovacuum_vacuum_threshold = '25'; -- 8 параллельных подключений, в одном цикле pgbench 3 операции апдейта, а значит 3 мёртвые строки на подключение - тогда 25 очень быстро достигнет. Пускай 250 будет
-ALTER SYSTEM SET autovacuum_vacuum_scale_factor = '0.05'; -- чтобы охватить по процентному соотношению таблицу pgbench_accounts
-ALTER SYSTEM SET autovacuum_vacuum_cost_delay = '10'; -- как на лекции
-ALTER SYSTEM SET autovacuum_vacuum_cost_limit = '1000'; -- как на лекции
+ALTER SYSTEM SET autovacuum_max_workers = '6'; -- много воркеров не стал делать, поскольку всего 4 таблицы и в pgbench_history вакуум выключил
+ALTER SYSTEM SET autovacuum_naptime = '10s'; -- чтобы не было большой паузы между автовакуумом, в branches и tellers иначе копились мёртвые строки
+ALTER SYSTEM SET autovacuum_vacuum_threshold = '250';
+ALTER SYSTEM SET autovacuum_vacuum_scale_factor = '0.05';
+ALTER SYSTEM SET autovacuum_vacuum_cost_delay = '10';
+ALTER SYSTEM SET autovacuum_vacuum_cost_limit = '1000';
+ALTER TABLE pgbench_history set (autovacuum_enabled = off); -- в этой таблице не было мёртвых строк, видимо только инсёрты в ней, поэтому отключил вакуум чтобы воркеров не занимать
+ALTER TABLE pgbench_accounts set (autovacuum_vacuum_scale_factor = '0.02'); -- в ней 3000 мёртвых строк - это всего 3%, поэтому для неё индивидуально меньше сделал, чтобы чаще срабатывал вакуум
 
-В этих двух таблицах почти никакой активности не было, поэтому там можно автовакуум вырубить вообще:
+Результат:
+Начальное tps ~ 700
+Среднее значение tps в последней 1/6 части работы (последние 10 строк) = 407.58 
 
-ALTER TABLE pgbench_branches set (autovacuum_enabled = off);
-ALTER TABLE pgbench_tellers set (autovacuum_enabled = off);
+Уже через 420 секунд после начала теста tps падает где-то до 400 (как и при стандартных настройках). При этом накопление мёртвых строк минимально по таблицам в ходе теста:
+- в branches и tellers количество мёртвых строк редко было более 500. 
+- в accounts количество мёртвых строк до 2 тысяч с копейками доходит (2% от количества строк в таблице).
 
-Итого:
-Начальное tps ~ 
-Среднее значение tps в последней 1/6 части работы (последние 10 строк) =  
-
-
-https://aws.amazon.com/blogs/database/understanding-autovacuum-in-amazon-rds-for-postgresql-environments/
-https://aws.amazon.com/blogs/database/a-case-study-of-tuning-autovacuum-in-amazon-rds-for-postgresql/
