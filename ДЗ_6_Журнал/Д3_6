@@ -1,0 +1,69 @@
+1) Настройте выполнение контрольной точки раз в 30 секунд.
+
+ALTER SYSTEM SET checkpoint_timeout = '30s';
+ALTER SYSTEM SET log_checkpoints = 'on';
+SELECT pg_reload_conf();
+
+2) 10 минут c помощью утилиты pgbench подавайте нагрузку.
+
+pgbench -i postgres -h 127.0.0.1
+
+pgbench -P 60 -T 600 -U postgres postgres
+
+3) Измерьте, какой объем журнальных файлов был сгенерирован за это время. Оцените, какой объем приходится в среднем на одну контрольную точку.
+
+Как проверял объём: SELECT pg_size_pretty(sum(size)) FROM pg_ls_waldir();
+
+Объём WAL файлов до теста - 16mb
+Объём WAL файлов после теста - 64mb
+Объём WAL файлов за время теста - 48mb
+Количество контрольных точек за время теста - 600 / (30*0.9) ~ 22 
+Объём WAL файлов на одну контрольную точку - 48 / 22 ~ 2.2mb
+
+Разницу можно было поточнее посчитать через дельту запросов SELECT pg_current_wal_insert_lsn();
+
+4) Проверьте данные статистики: все ли контрольные точки выполнялись точно по расписанию. Почему так произошло?
+
+Нет, чуть раньше. 
+
+checkpoint_completion_target равен 0.9, тогда при checkpoint_timeout = 30 секунд контрольная точка будет выполняться каждые 27 секунд, что подтверждают логи.
+
+sudo grep 'checkpoint' /var/log/postgresql/postgresql-14-main.log
+
+Несколько чекпоинтов:
+
+2022-04-03 19:43:29.014 UTC [12105] LOG:  checkpoint starting: time
+2022-04-03 19:43:56.109 UTC [12105] LOG:  checkpoint complete: wrote 1846 buffers (11.3%); 0 WAL file(s) added, 0 removed, 2 recycled; write=27.078 s, sync=0.004 s, total=27.096 s; sync files=6, longest=0.003 s, average=0.001 s; distance=20030 kB, estimate=20798 kB
+2022-04-03 19:43:59.110 UTC [12105] LOG:  checkpoint starting: time
+2022-04-03 19:44:26.106 UTC [12105] LOG:  checkpoint complete: wrote 2142 buffers (13.1%); 0 WAL file(s) added, 0 removed, 1 recycled; write=26.981 s, sync=0.005 s, total=26.997 s; sync files=11, longest=0.003 s, average=0.001 s; distance=20014 kB, estimate=20720 kB
+2022-04-03 19:44:29.109 UTC [12105] LOG:  checkpoint starting: time
+2022-04-03 19:44:56.014 UTC [12105] LOG:  checkpoint complete: wrote 1830 buffers (11.2%); 0 WAL file(s) added, 0 removed, 1 recycled; write=26.879 s, sync=0.006 s, total=26.906 s; sync files=6, longest=0.004 s, average=0.001 s; distance=20356 kB, estimate=20683 kB
+
+5) Сравните tps в синхронном/асинхронном режиме утилитой pgbench. Объясните полученный результат.
+
+Синхронный режим - tps = 562.504099
+
+ALTER SYSTEM SET synchronous_commit = off;
+SELECT pg_reload_conf();
+
+Асинхронный режим - tps = 596.977151
+
+В асинхронном режиме средний tps больше, поскольку постгрес не ждёт попадания транзакции в WAL файл, чтобы подтвердить успешность транзакции для клиента. Соответственно скорость исполнения транзакций быстрее.
+
+6) Создайте новый кластер с включенной контрольной суммой страниц. Создайте таблицу. Вставьте несколько значений. Выключите кластер. Измените пару байт в таблице. Включите кластер и сделайте выборку из таблицы. Что и почему произошло? как проигнорировать ошибку и продолжить работу?
+
+Пришлось помучаться, чтобы понять как кластер создать с проверкой контрольных сумм, но разобрался: 
+sudo pg_createcluster 14 main -- initdb --data-checksums
+
+На лекции дана команда 'pg_createcluster --data-checksums', но она вводит в заблуждение своим синтаксисом.
+
+dd if=/dev/zero of=/var/lib/postgresql/14/main/base/13726/16385 oflag=dsync conv=notrunc bs=1 count=8
+
+Если я правильно понимаю эту команду, то при помощи неё мы из /dev/zero набираем 8 нулевых байт и вставляем в файл, где хранится наша тестовая таблица. Вероятно, затирая таким образом часть информации. Соответственно, при запросе постгрес ругается на неверную контрольную сумму:
+
+postgres=# SELECT * FROM test;
+WARNING:  page verification failed, calculated checksum 46924 but expected 28093
+
+ALTER SYSTEM SET ignore_checksum_failure = 'on';
+
+После применения данной настройка запрос выполнился.
