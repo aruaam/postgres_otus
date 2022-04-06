@@ -1,0 +1,107 @@
+1) Настройте сервер так, чтобы в журнал сообщений сбрасывалась информация о блокировках, удерживаемых более 200 миллисекунд. Воспроизведите ситуацию, при которой в журнале появятся такие сообщения.
+
+ALTER SYSTEM SET log_lock_waits = on;
+ALTER SYSTEM SET deadlock_timeout = 200;
+SELECT pg_reload_conf();
+
+[8407] postgres@locks LOG:  process 8407 still waiting for ShareLock on transaction 737 after 200.166 ms
+[8407] postgres@locks DETAIL:  Process holding the lock: 8211. Wait queue: 8407.
+[8407] postgres@locks CONTEXT:  while updating tuple (0,1) in relation "accounts"
+[8407] postgres@locks STATEMENT:  UPDATE accounts SET amount = amount - 50.00 WHERE acc_no = 1;
+[8320] postgres@locks LOG:  process 8320 still waiting for ExclusiveLock on tuple (0,1) of relation 16385 of database 16384 after 200.156 ms
+[8320] postgres@locks DETAIL:  Process holding the lock: 8407. Wait queue: 8320.
+[8320] postgres@locks STATEMENT:  UPDATE accounts SET amount = amount + 100.00 WHERE acc_no = 1;
+
+2) Смоделируйте ситуацию обновления одной и той же строки тремя командами UPDATE в разных сеансах. Изучите возникшие блокировки в представлении pg_locks и убедитесь, что все они понятны. Пришлите список блокировок и объясните, что значит каждая.
+
+Сделал три апдейта в трёх сеансах:
+
+1 - 8526
+2 - 8320
+3 - 8407
+
+По этой таблице видно, что процесс 8526 ничего не ждёт (кроме коммита), 8320 ждёт пока завершится 8526, а 8407 ждёт пока завершится 8320. 
+8407 не может получить ExclusiveLock для строки, поскольку его уже получил апдейт из 8320. 
+RowExclusiveLock разрешены всем процессам, потому что они не конфликтуют между собой.
+
+ locktype |       mode       | granted | pid  | wait_for
+----------+------------------+---------+------+----------
+ relation | RowExclusiveLock | t       | 8407 | {8320}
+ relation | RowExclusiveLock | t       | 8320 | {8526}
+ relation | RowExclusiveLock | t       | 8526 | {}
+ tuple    | ExclusiveLock    | t       | 8320 | {8526}
+ tuple    | ExclusiveLock    | f       | 8407 | {8320}
+
+8526. Получены локи на нужные отношения, а также на айдишники для данной транзакции:
+
+   locktype    |             relation              | virtxid | xid |       mode       | granted
+---------------+-----------------------------------+---------+-----+------------------+---------
+ relation      | accounts_acc_no_idx               |         |     | RowExclusiveLock | t
+ relation      | accounts_pkey                     |         |     | RowExclusiveLock | t
+ relation      | accounts                          |         |     | RowExclusiveLock | t
+ virtualxid    |                                   | 4/23    |     | ExclusiveLock    | t
+ transactionid |                                   |         | 740 | ExclusiveLock    | t
+
+8320. Здесь также, но ещё присутствует пока ещё не полученный ShareLock на id транзакции ищ 8526, которую ждём:
+
+   locktype    |      relation       | virtxid | xid |       mode       | granted
+---------------+---------------------+---------+-----+------------------+---------
+ relation      | accounts_acc_no_idx |         |     | RowExclusiveLock | t
+ relation      | accounts_pkey       |         |     | RowExclusiveLock | t
+ relation      | accounts            |         |     | RowExclusiveLock | t
+ virtualxid    |                     | 5/3     |     | ExclusiveLock    | t
+ tuple         | accounts            |         |     | ExclusiveLock    | t
+ transactionid |                     |         | 740 | ShareLock        | f
+ transactionid |                     |         | 741 | ExclusiveLock    | t
+
+8407. Здесь процесс ещё ожидает получения ExclusiveLock на изменяемую строку:
+
+   locktype    |      relation       | virtxid | xid |       mode       | granted
+---------------+---------------------+---------+-----+------------------+---------
+ relation      | accounts_acc_no_idx |         |     | RowExclusiveLock | t
+ relation      | accounts_pkey       |         |     | RowExclusiveLock | t
+ relation      | accounts            |         |     | RowExclusiveLock | t
+ virtualxid    |                     | 6/3     |     | ExclusiveLock    | t
+ transactionid |                     |         | 742 | ExclusiveLock    | t
+ tuple         | accounts            |         |     | ExclusiveLock    | f  
+
+3) Воспроизведите взаимоблокировку трех транзакций. Можно ли разобраться в ситуации постфактум, изучая журнал сообщений?
+
+[8320] postgres@locks LOG:  process 8320 still waiting for ShareLock on transaction 745 after 200.171 ms
+[8320] postgres@locks DETAIL:  Process holding the lock: 9024. Wait queue: 8320.
+[8320] postgres@locks CONTEXT:  while updating tuple (0,10) in relation "accounts"
+[8320] postgres@locks STATEMENT:  UPDATE accounts SET amount = amount - 100.00 WHERE acc_no = 1;
+
+[9024] postgres@locks LOG:  process 9024 still waiting for ShareLock on transaction 747 after 200.136 ms
+[9024] postgres@locks DETAIL:  Process holding the lock: 8407. Wait queue: 9024.
+[9024] postgres@locks CONTEXT:  while updating tuple (0,2) in relation "accounts"
+[9024] postgres@locks STATEMENT:  UPDATE accounts SET amount = amount - 100.00 WHERE acc_no = 2;
+
+[8407] postgres@locks LOG:  process 8407 detected deadlock while waiting for ExclusiveLock on tuple (0,10) of relation 16385 of database 16384 after 200.133 ms
+[8407] postgres@locks DETAIL:  Process holding the lock: 8320. Wait queue: .
+[8407] postgres@locks STATEMENT:  UPDATE accounts SET amount = amount - 100.00 WHERE acc_no = 1;
+[8407] postgres@locks ERROR:  deadlock detected
+[8407] postgres@locks DETAIL:  
+       Process 8407 waits for ExclusiveLock on tuple (0,10) of relation 16385 of database 16384; blocked by process 8320.
+       Process 8320 waits for ShareLock on transaction 745; blocked by process 9024.
+       Process 9024 waits for ShareLock on transaction 747; blocked by process 8407.
+       Process 8407: UPDATE accounts SET amount = amount - 100.00 WHERE acc_no = 1;
+       Process 8320: UPDATE accounts SET amount = amount - 100.00 WHERE acc_no = 1;
+       Process 9024: UPDATE accounts SET amount = amount - 100.00 WHERE acc_no = 2;
+
+Да, по логу можно понять при каких транзакциях, в каких процессах и при какой последовательности возник дэдлок. 
+
+4) Могут ли две транзакции, выполняющие единственную команду UPDATE одной и той же таблицы (без where), заблокировать друг друга? Попробуйте воспроизвести такую ситуацию.
+
+Да.
+
+CREATE TABLE accounts(
+  acc_no integer PRIMARY KEY,
+  amount numeric
+);
+INSERT INTO accounts VALUES (1,1000.00);
+
+1-я сессия: UPDATE accounts SET acc_no = 10;
+2-я сессия: UPDATE accounts SET acc_no = 10;
+
+В этом случае второй апдейт будет залочен, поскольку будет ждать получения ShareLock на xid первого апдейта. Если бы был WHERE, то апдейты могли бы обновлять разные строки не мешая друг другу. 
