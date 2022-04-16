@@ -1,0 +1,53 @@
+Стартовые настройки кластера по pgtune:
+
+# DB Version: 14
+# OS Type: linux
+# DB Type: web
+# Total Memory (RAM): 4 GB
+# CPUs num: 2
+# Connections num: 50
+# Data Storage: ssd
+
+ALTER SYSTEM SET max_connections = '50';
+ALTER SYSTEM SET shared_buffers = '1GB';
+ALTER SYSTEM SET effective_cache_size = '3GB';
+ALTER SYSTEM SET maintenance_work_mem = '256MB';
+ALTER SYSTEM SET checkpoint_completion_target = '0.9';
+ALTER SYSTEM SET wal_buffers = '16MB';
+ALTER SYSTEM SET default_statistics_target = '100';
+ALTER SYSTEM SET random_page_cost = '1.1';
+ALTER SYSTEM SET effective_io_concurrency = '200';
+ALTER SYSTEM SET work_mem = '20971kB';
+ALTER SYSTEM SET min_wal_size = '1GB';
+ALTER SYSTEM SET max_wal_size = '4GB';
+ALTER SYSTEM SET max_worker_processes = '2';
+ALTER SYSTEM SET max_parallel_workers_per_gather = '1';
+ALTER SYSTEM SET max_parallel_workers = '2';
+ALTER SYSTEM SET max_parallel_maintenance_workers = '1';
+ALTER SYSTEM SET max_parallel_maintenance_workers = '1';
+ALTER SYSTEM SET synchronous_commit = 'off';
+
+pgbench -i postgres
+pgbench -c 10 -j 2 -P 60 -T 600 -U postgres postgres
+
+Результат: tps = 1305.367027 
+
+Пробовал добавлять параметр: ALTER SYSTEM SET fsync = 'off';
+Результат: tps = 1252.277684 - производительность хуже, но при этом возникает риск побить базу при внештатном выключении сервера. 
+Включил обратно параметр.
+
+Далее добавил параметры: 
+ALTER SYSTEM SET wal_level = 'minimal';
+ALTER SYSTEM SET max_wal_senders = '0';
+При таком wal_level количество информации, записываемой в журнал предзаписи, минимально. max_wal_senders требуется выставить ноль, чтобы сервер мог запуститься с таким wal_level.
+Результат: tps = 1341.014179 - уже чуть быстрее, чем просто с асинхронной записью журналов.
+
+Далее уже дополнительно сделал не настройку кластера, а таблиц:
+ALTER TABLE pgbench_branches SET UNLOGGED;
+ALTER TABLE pgbench_tellers SET UNLOGGED;
+ALTER TABLE pgbench_accounts SET UNLOGGED;
+ALTER TABLE pgbench_history SET UNLOGGED;
+С этой настройкой транзакции в таблицах вообще не пишутся в журнал, что увеличивает производительность.
+Результат: tps = 1357.711181 - ещё быстрее, чем wal_level = 'minimal'.
+
+Больше не придумал что ещё такого можно покрутить.
