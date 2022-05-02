@@ -14,5 +14,5 @@ ERROR:  could not connect to the publisher: connection to server at "10.182.0.4"
 
 2) На ВМ3 когда пробовал локально сделать бэкап через pg_basebackup, возникала проблема с правами для папки main, если через sudo её чистить и пересоздавать. В итоге бэкап кластера не запускался: failed because the service did not take the steps required by its unit configuration. Если с бэкапными кластером работать под пользователем postgres, то бэкап запускается корректно.
 
-3) Для логической репликации создавал отдельного пользователя replication. Не сразу заработала репликация поскольку не дал прав (permission denied for table) и нужных прав для этой роли (must be superuser or replication role to start walsender). Диагностировать получилось через представление pg_stat_subscription и по логам постгреса.
+3) Для логической репликации создавал отдельного пользователя replication. Не сразу заработала репликация поскольку не дал доступ к таблицам (permission denied for table) и нужных прав для этой роли (must be superuser or replication role to start walsender). Диагностировать получилось через представление pg_stat_subscription и по логам постгреса.
 
