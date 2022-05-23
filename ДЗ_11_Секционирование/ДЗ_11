@@ -87,3 +87,6 @@ C \d+ ticket_flights проверяем, что все партиции отоб
 EXPLAIN ANALYZE SELECT * FROM ticket_flights WHERE flight_id = '163724';
 
 По нему видим, что поиск выполняется только в одной секции.
+
+Дропаем старую непартицированную таблицу:
+DROP TABLE ticket_flights_old;
