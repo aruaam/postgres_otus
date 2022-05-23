@@ -13,23 +13,6 @@ SELECT pg_size_pretty(pg_table_size('seats')); -- 96 kb
 SELECT pg_size_pretty(pg_table_size('ticket_flights')); -- 547 mb - самая большая
 SELECT pg_size_pretty(pg_table_size('tickets')); -- 386 mb
 
-Рандомные значения из каждой таблицы, чтобы проверить потом работу партицирования:
-SELECT ticket_no FROM ticket_flights ORDER BY RANDOM() LIMIT 1; -- 0005433861838
-SELECT flight_id FROM ticket_flights ORDER BY RANDOM() LIMIT 1; -- 163724
-SELECT fare_conditions FROM ticket_flights ORDER BY RANDOM() LIMIT 1; -- Economy
-SELECT amount FROM ticket_flights ORDER BY RANDOM() LIMIT 1; -- 7000
-
-Сама таблица:
-                     Table "bookings.ticket_flights"
-     Column      |         Type          | Collation | Nullable | Default
------------------+-----------------------+-----------+----------+---------
- ticket_no       | character(13)         |           | not null |
- flight_id       | integer               |           | not null |
- fare_conditions | character varying(10) |           | not null |
- amount          | numeric(10,2)         |           | not null |
-Indexes:
-    "ticket_flights_pkey" PRIMARY KEY, btree (ticket_no, flight_id)
-
 Всего записей до партицирования:
 SELECT count(*) FROM ticket_flights; -- 8391852
 
@@ -43,7 +26,7 @@ SELECT count(*) FILTER (WHERE fare_conditions = 'Business') FROM ticket_flights;
 
 Как ticket_no разбить по читаемым и понятным диапазонам не смог придумать.
 
-По flight_id неравномерное распределение, но зато должно лучше по айдишнику искать:
+По flight_id неравномерное распределение, но зато должно лучше по айдишнику искать и можно по диапазонам разбить:
 
 SELECT count(*) FILTER (WHERE flight_id >= 0 AND flight_id < 50000) FROM ticket_flights; -- 2749100
 SELECT count(*) FILTER (WHERE flight_id >= 50000 AND flight_id < 100000) FROM ticket_flights; -- 2330232
