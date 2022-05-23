@@ -1,0 +1,89 @@
+Секционировать большую таблицу из демо базы flights.
+
+Взял самую большую базу отсюда: https://postgrespro.ru/docs/postgrespro/10/demodb-bookings-installation
+Создал базу demo в кластере и загрузил туда полученный скрипт: psql -U postgres demo < /var/lib/postgresql/14/demo-big-20170815.sql 
+
+Найдём самую большую таблицу:
+SELECT pg_size_pretty(pg_table_size('aircrafts_data')); -- 16 kb
+SELECT pg_size_pretty(pg_table_size('airports_data')); -- 56 kb
+SELECT pg_size_pretty(pg_table_size('boarding_passes')); -- 455 mb 
+SELECT pg_size_pretty(pg_table_size('bookings')); -- 105 mb
+SELECT pg_size_pretty(pg_table_size('flights')); -- 21 mb
+SELECT pg_size_pretty(pg_table_size('seats')); -- 96 kb
+SELECT pg_size_pretty(pg_table_size('ticket_flights')); -- 547 mb - самая большая
+SELECT pg_size_pretty(pg_table_size('tickets')); -- 386 mb
+
+Рандомные значения из каждой таблицы, чтобы проверить потом работу партицирования:
+SELECT ticket_no FROM ticket_flights ORDER BY RANDOM() LIMIT 1; -- 0005433861838
+SELECT flight_id FROM ticket_flights ORDER BY RANDOM() LIMIT 1; -- 163724
+SELECT fare_conditions FROM ticket_flights ORDER BY RANDOM() LIMIT 1; -- Economy
+SELECT amount FROM ticket_flights ORDER BY RANDOM() LIMIT 1; -- 7000
+
+Сама таблица:
+                     Table "bookings.ticket_flights"
+     Column      |         Type          | Collation | Nullable | Default
+-----------------+-----------------------+-----------+----------+---------
+ ticket_no       | character(13)         |           | not null |
+ flight_id       | integer               |           | not null |
+ fare_conditions | character varying(10) |           | not null |
+ amount          | numeric(10,2)         |           | not null |
+Indexes:
+    "ticket_flights_pkey" PRIMARY KEY, btree (ticket_no, flight_id)
+
+Всего записей до партицирования:
+SELECT count(*) FROM ticket_flights; -- 8391852
+
+Партицировать по amount или fare_conditions смысла не очень много, поскольку по этим значениям поиск будет мало эффективен. Например, логично, что наибольшее число билетов - это эконом-класс, поэтому партицирование по by list будет очень неравномерным:
+
+SELECT count(*) FILTER (WHERE fare_conditions = 'Comfort') FROM ticket_flights; -- 139965
+SELECT count(*) FILTER (WHERE fare_conditions = 'Economy') FROM ticket_flights; -- 7392231
+SELECT count(*) FILTER (WHERE fare_conditions = 'Business') FROM ticket_flights; -- 859656
+
+Предполагаю, что для amount распределение примерно таким же будет.
+
+Как ticket_no разбить по читаемым и понятным диапазонам не смог придумать.
+
+По flight_id неравномерное распределение, но зато должно лучше по айдишнику искать:
+
+SELECT count(*) FILTER (WHERE flight_id >= 0 AND flight_id < 50000) FROM ticket_flights; -- 2749100
+SELECT count(*) FILTER (WHERE flight_id >= 50000 AND flight_id < 100000) FROM ticket_flights; -- 2330232
+SELECT count(*) FILTER (WHERE flight_id >= 100000 AND flight_id < 150000) FROM ticket_flights; -- 1216955
+SELECT count(*) FILTER (WHERE flight_id >= 150000 AND flight_id < 200000) FROM ticket_flights; -- 1841744
+SELECT count(*) FILTER (WHERE flight_id >= 200000 AND flight_id < 250000) FROM ticket_flights; -- 253821
+SELECT count(*) FILTER (WHERE flight_id >= 250000 AND flight_id < 300000) FROM ticket_flights; -- 0
+
+Текущую таблицу переименовываем, чтобы освободить имя:
+ALTER TABLE ticket_flights RENAME TO ticket_flights_old;
+
+Создаём основную партицированную таблицу и партиции:
+CREATE TABLE ticket_flights (like ticket_flights_old including all) PARTITION BY RANGE (flight_id);
+CREATE TABLE ticket_flights_default partition of ticket_flights default;
+CREATE TABLE ticket_flights_0_50 partition of ticket_flights for values from (0) to (50000);
+CREATE TABLE ticket_flights_50_100 partition of ticket_flights for values from (50000) to (100000);
+CREATE TABLE ticket_flights_100_150 partition of ticket_flights for values from (100000) to (150000);
+CREATE TABLE ticket_flights_150_200 partition of ticket_flights for values from (150000) to (200000);
+
+Копируем данные по партициям из старой непартицированной таблицы:
+INSERT INTO ticket_flights_0_50 SELECT * FROM ticket_flights_old WHERE flight_id < 50000;
+INSERT INTO ticket_flights_50_100 SELECT * FROM ticket_flights_old WHERE flight_id >= 50000 AND flight_id < 100000;
+INSERT INTO ticket_flights_100_150 SELECT * FROM ticket_flights_old WHERE flight_id >= 100000 AND flight_id < 150000;
+INSERT INTO ticket_flights_150_200 SELECT * FROM ticket_flights_old WHERE flight_id >= 150000 AND flight_id < 200000;
+INSERT INTO ticket_flights_default SELECT * FROM ticket_flights_old WHERE flight_id >= 200000;
+
+Проверяем, что все данные перенесены:
+SELECT count(*) FROM ticket_flights; -- 8391852
+
+Вешаем обратно констрейнты:
+ALTER TABLE ticket_flights ADD CONSTRAINT ticket_flights_flight_id_fkey FOREIGN KEY (flight_id) REFERENCES flights(flight_id) NOT VALID;
+ALTER TABLE ticket_flights ADD CONSTRAINT ticket_flights_ticket_no_fkey FOREIGN KEY (ticket_no) REFERENCES tickets(ticket_no) NOT VALID;
+ALTER TABLE boarding_passes DROP CONSTRAINT boarding_passes_ticket_no_fkey;
+ALTER TABLE boarding_passes ADD CONSTRAINT boarding_passes_ticket_no_fkey FOREIGN KEY (ticket_no, flight_id) REFERENCES ticket_flights(ticket_no, flight_id) NOT VALID;
+
+Можно с NOT VALID, чтобы меньше блокировок было, а потом VALIDATE CONSTRAINT сделать.
+
+C \d+ ticket_flights проверяем, что все партиции отображаются и констрейнты на месте.
+
+Делаем запрос вида:
+EXPLAIN ANALYZE SELECT * FROM ticket_flights WHERE flight_id = '163724';
+
+По нему видим, что поиск выполняется только в одной секции.
