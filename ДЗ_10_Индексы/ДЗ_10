@@ -1,0 +1,193 @@
+1) Создать индекс к какой-либо из таблиц вашей БД -- тут взял большую базу flights с постгрес про.
+
+Допустим, что мы хотим посчитать суммарную стоимость купленных билетов бизнес и комфорт класса:
+
+EXPLAIN (ANALYZE, BUFFERS) SELECT sum(amount) FROM ticket_flights WHERE fare_conditions = 'Business' OR fare_conditions = 'Comfort';
+
+В плане запроса видно, что применяется параллельное последовательное сканирование по fare_conditions:
+
+                                                                      QUERY PLAN                                              
+------------------------------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=124404.98..124404.99 rows=1 width=32) (actual time=1207.415..1207.484 rows=1 loops=1)
+   Buffers: shared hit=544 read=69389
+   ->  Gather  (cost=124404.76..124404.97 rows=2 width=32) (actual time=1201.822..1207.411 rows=3 loops=1)
+         Workers Planned: 2
+         Workers Launched: 2
+         Buffers: shared hit=544 read=69389
+         ->  Partial Aggregate  (cost=123404.76..123404.77 rows=1 width=32) (actual time=1162.504..1162.506 rows=1 loops=3)
+               Buffers: shared hit=544 read=69389
+               ->  Parallel Seq Scan on ticket_flights  (cost=0.00..122382.08 rows=409072 width=6) (actual time=33.915..1044.454 rows=333207 loops=3)
+                     Filter: (((fare_conditions)::text = 'Business'::text) OR ((fare_conditions)::text = 'Comfort'::text))
+                     Rows Removed by Filter: 2464077
+                     Buffers: shared hit=544 read=69389
+ Planning:
+   Buffers: shared hit=19 read=2
+ Planning Time: 1.853 ms
+ JIT:
+   Functions: 17
+   Options: Inlining false, Optimization false, Expressions true, Deforming true
+   Timing: Generation 3.806 ms, Inlining 0.000 ms, Optimization 2.080 ms, Emission 41.275 ms, Total 47.160 ms
+ Execution Time: 1208.586 ms
+(20 rows)
+
+Добавляем индекс по fare_conditions:
+
+CREATE INDEX CONCURRENTLY ON ticket_flights (fare_conditions);
+
+----------------------------------------------------------------
+
+2) Прислать текстом результат команды explain, в которой используется данный индекс.
+
+С индексом параллельного последовательного сканирования не применяется, теперь планировщик использовал индексное сканирование с применением битовой карты. Запросы исполнился быстрее.
+
+                                                                                    QUERY PLAN                                     
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=114083.20..114083.21 rows=1 width=32) (actual time=302.375..306.109 rows=1 loops=1)
+   Buffers: shared hit=9194
+   ->  Gather  (cost=114082.98..114083.19 rows=2 width=32) (actual time=299.460..306.076 rows=3 loops=1)
+         Workers Planned: 2
+         Workers Launched: 2
+         Buffers: shared hit=9194
+         ->  Partial Aggregate  (cost=113082.98..113082.99 rows=1 width=32) (actual time=262.713..262.715 rows=1 loops=3)
+               Buffers: shared hit=9194
+               ->  Parallel Bitmap Heap Scan on ticket_flights  (cost=11338.41..112060.30 rows=409072 width=6) (actual time=19.421..117.057 rows=333207 loops=3)
+                     Recheck Cond: (((fare_conditions)::text = 'Business'::text) OR ((fare_conditions)::text = 'Comfort'::text))
+                     Heap Blocks: exact=3462
+                     Buffers: shared hit=9194
+                     ->  BitmapOr  (cost=11338.41..11338.41 rows=995553 width=0) (actual time=48.261..48.263 rows=0 loops=1)
+                           Buffers: shared hit=858
+                           ->  Bitmap Index Scan on ticket_flights_fare_conditions_idx  (cost=0.00..9384.07 rows=861284 width=0) (actual time=40.743..40.744 rows=859656 loops=1)
+                                 Index Cond: ((fare_conditions)::text = 'Business'::text)
+                                 Buffers: shared hit=737
+                           ->  Bitmap Index Scan on ticket_flights_fare_conditions_idx  (cost=0.00..1463.46 rows=134270 width=0) (actual time=7.514..7.514 rows=139965 loops=1)
+                                 Index Cond: ((fare_conditions)::text = 'Comfort'::text)
+                                 Buffers: shared hit=121
+ Planning Time: 0.114 ms
+ JIT:
+   Functions: 17
+   Options: Inlining false, Optimization false, Expressions true, Deforming true
+   Timing: Generation 11.616 ms, Inlining 0.000 ms, Optimization 1.882 ms, Emission 29.271 ms, Total 42.768 ms
+ Execution Time: 307.182 ms
+
+----------------------------------------------------------------
+
+3) Реализовать индекс на часть таблицы или индекс на поле с функцией
+
+DROP INDEX ticket_flights_fare_conditions_idx;
+
+А попробуем сделать индекс на часть таблицы, причём на наибольшую. Наибольшая - это fare_conditions = 'Comfort':
+
+SELECT count(*) FROM ticket_flights WHERE fare_conditions = 'Business'; -- 859656
+SELECT count(*) FROM ticket_flights WHERE fare_conditions = 'Comfort'; -- 139965
+SELECT count(*) FROM ticket_flights WHERE fare_conditions = 'Economy'; -- 7392231
+
+Так используя индекс мы сможем отсеять все ненужные нам данные.
+
+CREATE INDEX CONCURRENTLY fare_conditions_not_economy ON ticket_flights (fare_conditions) WHERE fare_conditions <> 'Economy';
+
+EXPLAIN (ANALYZE, BUFFERS) SELECT sum(amount) FROM ticket_flights WHERE fare_conditions <> 'Economy';
+
+И действительно, запрос получился дешевле по стоимости, план запроса проще, но по времени чуть дольше работает: 
+
+                                                                                      QUERY PLAN                                                                  
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=85748.18..85748.19 rows=1 width=32) (actual time=329.749..336.841 rows=1 loops=1)
+   Buffers: shared hit=9932
+   ->  Gather  (cost=85747.96..85748.17 rows=2 width=32) (actual time=329.361..336.820 rows=3 loops=1)
+         Workers Planned: 2
+         Workers Launched: 2
+         Buffers: shared hit=9932
+         ->  Partial Aggregate  (cost=84747.96..84747.97 rows=1 width=32) (actual time=289.389..289.390 rows=1 loops=3)
+               Buffers: shared hit=9932
+               ->  Parallel Index Scan using fare_conditions_not_economy on ticket_flights  (cost=0.42..83721.12 rows=410735 width=6) (actual time=0.039..169.488 rows=333207 loops=3)
+                     Buffers: shared hit=9932
+ Planning Time: 0.127 ms
+ Execution Time: 336.920 ms
+(12 rows)
+
+----------------------------------------------------------------
+
+4) Создать индекс на несколько полей.
+
+Нам не так много данных нужно из таблицы, поэтому если мы добавим в индекс колонку amount, то это позволит всю нужную информацию для выполнения запроса получить из индекса:
+
+CREATE INDEX CONCURRENTLY fare_conditions_not_economy ON ticket_flights (fare_conditions) INCLUDE (amount) WHERE fare_conditions <> 'Economy';
+
+Действительно, запрос стал ещё дешевле за счёт Index Only Scan:
+
+                                                                                         QUERY PLAN                                                               
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=28315.03..28315.04 rows=1 width=32) (actual time=289.570..291.658 rows=1 loops=1)
+   Buffers: shared hit=3841
+   ->  Gather  (cost=28314.81..28315.02 rows=2 width=32) (actual time=289.553..291.643 rows=3 loops=1)
+         Workers Planned: 2
+         Workers Launched: 2
+         Buffers: shared hit=3841
+         ->  Partial Aggregate  (cost=27314.81..27314.82 rows=1 width=32) (actual time=252.690..252.691 rows=1 loops=3)
+               Buffers: shared hit=3841
+               ->  Parallel Index Only Scan using fare_conditions_not_economy on ticket_flights  (cost=0.42..26302.26 rows=405018 width=6) (actual time=0.057..154.501 rows=333207 loops=3)
+                     Filter: (((fare_conditions)::text = 'Business'::text) OR ((fare_conditions)::text = 'Comfort'::text))
+                     Heap Fetches: 0
+                     Buffers: shared hit=3841
+ Planning:
+   Buffers: shared hit=13 read=1
+ Planning Time: 0.386 ms
+ Execution Time: 291.706 ms
+(16 rows)
+
+----------------------------------------------------------------
+
+5) Реализовать индекс для полнотекстового поиска.
+
+Найду всех однофамильцев из таблицы билеты. Результаты без индекса:
+
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM tickets WHERE passenger_name ~ 'SEMENOV';
+
+                                                           QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------------
+ Gather  (cost=1000.00..74401.17 rows=86236 width=104) (actual time=2.075..2221.015 rows=41332 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   Buffers: shared hit=246 read=49169
+   ->  Parallel Seq Scan on tickets  (cost=0.00..64777.57 rows=35932 width=104) (actual time=0.203..2176.928 rows=13777 loops=3)
+         Filter: (passenger_name ~ 'SEMENOV'::text)
+         Rows Removed by Filter: 969508
+         Buffers: shared hit=246 read=49169
+ Planning Time: 0.276 ms
+ Execution Time: 2225.012 ms
+(10 rows)
+
+Так просто как на лекции не получилось:
+CREATE INDEX CONCURRENTLY gin_idx ON tickets USING GIN (passenger_name);
+ERROR:  data type text has no default operator class for access method "gin"
+HINT:  You must specify an operator class for the index or define a default operator class for the data type.
+CREATE EXTENSION btree_gin;
+
+Несмотря на этот индекс время исполнения не снизилось. Сделал по другому:
+
+DROP INDEX gin_idx;
+
+CREATE INDEX gin_idx ON tickets USING gin(to_tsvector('english',passenger_name));
+
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM tickets where to_tsvector('english',passenger_name) @@ to_tsquery('SEMENOV');
+
+Однофамильцы нашлись значительно быстрее:
+
+                                                               QUERY PLAN
+----------------------------------------------------------------------------------------------------------------------------------------
+ Gather  (cost=1146.56..37485.36 rows=14749 width=104) (actual time=16.103..187.010 rows=22715 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   Buffers: shared hit=11 read=18292 written=375
+   ->  Parallel Bitmap Heap Scan on tickets  (cost=146.56..35010.46 rows=6145 width=104) (actual time=5.358..126.569 rows=7572 loops=3)
+         Recheck Cond: (to_tsvector('english'::regconfig, passenger_name) @@ to_tsquery('SEMENOV'::text))
+         Heap Blocks: exact=11076
+         Buffers: shared hit=11 read=18292 written=375
+         ->  Bitmap Index Scan on gin_idx  (cost=0.00..142.87 rows=14749 width=0) (actual time=10.528..10.529 rows=22715 loops=1)
+               Index Cond: (to_tsvector('english'::regconfig, passenger_name) @@ to_tsquery('SEMENOV'::text))
+               Buffers: shared hit=10
+ Planning:
+   Buffers: shared hit=25 dirtied=3
+ Planning Time: 0.477 ms
+ Execution Time: 191.428 ms
+(15 rows)
