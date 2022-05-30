@@ -113,7 +113,7 @@ EXPLAIN (ANALYZE, BUFFERS) SELECT sum(amount) FROM ticket_flights WHERE fare_con
 
 CREATE INDEX CONCURRENTLY fare_conditions_not_economy ON ticket_flights (fare_conditions) INCLUDE (amount) WHERE fare_conditions <> 'Economy';
 
-Действительно, запрос стал ещё дешевле за счёт Index Only Scan:
+Действительно, запрос стал ещё дешевле и быстрее за счёт Index Only Scan:
 
                                                                                          QUERY PLAN                                                               
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
