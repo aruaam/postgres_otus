@@ -75,7 +75,7 @@ CREATE INDEX CONCURRENTLY ON ticket_flights (fare_conditions);
 
 DROP INDEX ticket_flights_fare_conditions_idx;
 
-А попробуем сделать индекс на часть таблицы, причём на наибольшую. Наибольшая - это fare_conditions = 'Comfort':
+А попробуем сделать индекс на часть таблицы, причём на наибольшую. Наибольшая - это fare_conditions = 'Economy':
 
 SELECT count(*) FROM ticket_flights WHERE fare_conditions = 'Business'; -- 859656
 SELECT count(*) FROM ticket_flights WHERE fare_conditions = 'Comfort'; -- 139965
